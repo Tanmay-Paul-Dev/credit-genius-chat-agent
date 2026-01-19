@@ -1,7 +1,7 @@
 # retriever.py
+# MMR Retriever for Pinecone vector store
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
-from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 
 class MMRRetriever:
@@ -36,17 +36,12 @@ class MMRRetriever:
         # Use provided user_id or fall back to instance user_id
         filter_user_id = user_id or self.user_id
 
-        # Build metadata filter for user_id
+        # Build metadata filter for user_id (Pinecone format)
         metadata_filter = None
         if filter_user_id:
-            metadata_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="user_id", match=MatchValue(value=filter_user_id)
-                    )
-                ]
-            )
+            metadata_filter = {"userId": {"$eq": filter_user_id}}
 
+        print("Filter User ID", filter_user_id)
         # Create retriever with filter
         retriever = self.vectorstore.as_retriever(
             search_type="mmr",

@@ -1,27 +1,21 @@
-from services.qdrant_service import qdrant_client
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from services.pinecone_service import pinecone_index
 import os
 
 
 def fetch_borrower_info_from_vector_db(
     user_id: str,
 ):
-    query_filter = Filter(
-        must=[
-            FieldCondition(
-                key="user_id",
-                match=MatchValue(value=user_id),
-            ),
-            FieldCondition(
-                key="category",
-                match=MatchValue(value="BORROWER"),
-            ),
-        ]
+    """
+    Fetch borrower info from Pinecone filtered by user_id and category.
+    """
+    # Query Pinecone with metadata filter
+    results = pinecone_index.query(
+        vector=[0.0] * 1536,  # Dummy vector for metadata-only query
+        filter={
+            "user_id": {"$eq": user_id},
+            "category": {"$eq": "BORROWER"},
+        },
+        top_k=5,
+        include_metadata=True,
     )
-    results = qdrant_client.query_points(
-        collection_name=os.getenv("VECTOR_DB_COLLECTION_NAME"),
-        query_filter=query_filter,
-        limit=5,
-        with_payload=True,
-    ).points
-    return results
+    return results.matches

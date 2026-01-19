@@ -1,6 +1,6 @@
 from langchain_core.tools import tool
 from retriever import MMRRetriever
-from services.qdrant_service import vectorstore
+from services.pinecone_service import vectorstore
 from langchain_core.runnables import RunnableConfig
 
 retriever = MMRRetriever(

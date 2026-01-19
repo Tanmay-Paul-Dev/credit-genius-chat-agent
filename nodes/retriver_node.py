@@ -13,7 +13,7 @@ from states import State
 from langchain_core.runnables import RunnableConfig
 from langgraph.store.base import BaseStore
 from retriever import MMRRetriever
-from services.qdrant_service import vectorstore
+from services.pinecone_service import vectorstore
 from services.opanai_service import initialize_model
 
 
@@ -50,6 +50,7 @@ async def retriever_node(
         k=5,
         fetch_k=20,
         lambda_mult=0.6,
+        user_id=user_id
     )
 
     recent_messages = state["messages"]
@@ -84,6 +85,8 @@ async def retriever_node(
 
     # Retrive The Intent Information
     intent_data = retriever.retrieve(intent, user_id=user_id)
+
+    print("====>",intent_data)
 
     if intent_data:
         intent_data = intent_data[0].page_content

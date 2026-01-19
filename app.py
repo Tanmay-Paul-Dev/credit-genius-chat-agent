@@ -158,7 +158,7 @@ async def chat():
         # Build graph with store
         app = build_graph(store=store)
 
-        user_id = "32b397c1-d160-44bc-9940-3d16542d8718"
+        user_id = "916f1a62-4e4a-4258-9440-3f1619083f3f"
         thread_id = f"terminal-chat-{user_id}"
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
@@ -239,4 +239,8 @@ async def chat():
 # ENTRY POINT
 # ----------------------------------------
 if __name__ == "__main__":
-    asyncio.run(chat())
+    try:
+        asyncio.run(chat())
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+

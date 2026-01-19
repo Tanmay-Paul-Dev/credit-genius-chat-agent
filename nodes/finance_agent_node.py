@@ -11,7 +11,7 @@ from langgraph.store.base import BaseStore
 from states import State, MemoryDecision, FinanceAgentState
 from langchain_core.runnables import RunnableConfig
 from retriever import MMRRetriever
-from services.qdrant_service import vectorstore
+from services.pinecone_service import vectorstore
 from utils.prompt_loader import load_prompt
 
 
