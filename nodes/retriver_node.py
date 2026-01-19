@@ -86,8 +86,6 @@ async def retriever_node(
     # Retrive The Intent Information
     intent_data = retriever.retrieve(intent, user_id=user_id)
 
-    print("====>",intent_data)
-
     if intent_data:
         intent_data = intent_data[0].page_content
     else:
