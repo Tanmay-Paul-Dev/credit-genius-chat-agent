@@ -1,6 +1,8 @@
+from dotenv import load_dotenv
+load_dotenv()  # Must be called before importing modules that use env vars
+
 import asyncio
 import json
-from dotenv import load_dotenv
 from pymongo import MongoClient
 
 from states import State, ErrorType
@@ -32,7 +34,6 @@ from repositories.conditional_repository import (
 # ----------------------------------------
 # ENV & DB
 # ----------------------------------------
-load_dotenv()
 client = MongoClient("mongodb://localhost:27017")
 
 DB_URI = "postgresql://root:Admin%40008@localhost:5432/postgres?sslmode=disable"
