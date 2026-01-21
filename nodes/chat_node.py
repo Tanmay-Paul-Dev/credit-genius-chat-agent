@@ -9,57 +9,117 @@ import uuid
 
 
 async def save_response_memory_background(
-    query: str, response_content: str, user_id: str, store: BaseStore
+    user_id: str,
+    store: BaseStore,
+    retrieved_data: dict = None,
 ):
-    """Background task to analyze chat response and save relevant data to memory."""
+    """
+    Use LLM to determine which retrieved data is important enough to store in memory for future use.
+    Only stores key user information that will be needed in future conversations.
+    """
     try:
+        if not retrieved_data:
+            print("[Memory] No retrieved data to save")
+            return
+
         llm = initialize_model()
         ns = ("user", user_id, "details")
 
-        # Get existing memories to avoid duplicates
+        # Get existing memories to check for duplicates
         items = list(store.search(ns))
-        existing = (
+        existing_memories = (
             "\n".join(f"- {it.value.get('data', '')}" for it in items)
             if items
             else "(empty)"
         )
 
-        # Prompt to determine if response contains storable info
-        extract_prompt = f"""Analyze this conversation and determine if there's any important user-specific information worth remembering.
+        # Get required_info and optional_info from retrieved_data
+        required_info = retrieved_data.get("required_info", {}) or {}
+        optional_info = retrieved_data.get("optional_info", {}) or {}
 
-        USER QUERY: {query}
+        # Combine all data for LLM analysis
+        all_data = {**required_info, **optional_info}
+        
+        # Filter out None values
+        all_data = {k: v for k, v in all_data.items() if v is not None and v != "" and v != "null"}
 
-        ASSISTANT RESPONSE: {response_content[:2000]}
+        if not all_data:
+            print("[Memory] No valid data to analyze")
+            return
 
-        ALREADY STORED:
-        {existing}
+        # Ask LLM to determine what's important to store
+        prompt = f"""Analyze the following user data and determine which items are IMPORTANT to remember for future financial conversations.
 
-        If there's NEW factual information about the user (credit scores, account balances, loan amounts, dates, preferences, etc.) that is NOT already stored, extract it as a single short sentence.
+RETRIEVED USER DATA:
+{all_data}
 
-            Rules:
-            - Return "NONE" if no new information to store
-            - Return "NONE" if the info is already stored
-            - Otherwise return ONLY a short sentence like:
-            "User has credit scores of 802 and 553"
-            "User's loan balance is $50,000"
-            "User prefers monthly payments"
+ALREADY STORED IN MEMORY:
+{existing_memories}
 
-Keep it under 100 characters. Return ONLY the sentence or "NONE"."""
+TASK:
+Select ONLY the data that is:
+1. Important for future financial decisions (credit scores, income, loan amounts, employment)
+2. NOT already stored in memory
+3. Specific factual data about the user
 
-        decision = await llm.ainvoke([SystemMessage(content=extract_prompt)])
+DO NOT store:
+- Temporary or transient information
+- Generic descriptions or summaries
+- Data that's already stored
+- Addresses or locations (unless specifically relevant to loans)
 
-        memory_text = decision.content.strip().strip('"')
+For each important item, return it as a short sentence.
+Return ONLY a JSON array of strings, each being a memory to store.
+If nothing is important enough to store, return an empty array [].
 
-        print(f"[Memory Background] LLM decision: '{memory_text}'")
+Example output:
+["User's credit score is 716", "User's income is $5000 per month"]
 
-        if memory_text and memory_text.upper() != "NONE" and len(memory_text) < 200:
-            store.put(ns, str(uuid.uuid4()), {"data": memory_text})
-            print(f"[Memory Background] Stored: {memory_text}")
+Return ONLY the JSON array, nothing else."""
+
+        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        
+        # Parse the response
+        import json
+        try:
+            # Clean up the response - remove markdown code blocks if present
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+            
+            memories_to_store = json.loads(content)
+        except json.JSONDecodeError:
+            print(f"[Memory] Could not parse LLM response: {response.content}")
+            return
+
+        if not memories_to_store or not isinstance(memories_to_store, list):
+            print("[Memory] LLM determined no important data to store")
+            return
+
+        # Store the important memories
+        stored_count = 0
+        existing_lower = set(m.lower() for m in existing_memories.split("\n") if m.strip())
+        
+        for memory_text in memories_to_store:
+            if memory_text and isinstance(memory_text, str):
+                # Check if already stored
+                if memory_text.lower() not in existing_lower:
+                    store.put(ns, str(uuid.uuid4()), {"data": memory_text})
+                    print(f"[Memory] Stored: {memory_text}")
+                    stored_count += 1
+                else:
+                    print(f"[Memory] Skipped (duplicate): {memory_text}")
+
+        if stored_count == 0:
+            print("[Memory] No new important data to store")
         else:
-            print(f"[Memory Background] Skipped - no new info to store")
+            print(f"[Memory] Total stored: {stored_count} items")
 
     except Exception as e:
-        print(f"[Memory Background] Error: {e}")
+        print(f"[Memory] Error: {e}")
 
 
 async def chat_node(state: State, config: RunnableConfig, store: BaseStore):
@@ -90,8 +150,6 @@ async def chat_node(state: State, config: RunnableConfig, store: BaseStore):
         memory: {memories}
     """
 
-    print(context_message)
-
     # Invoke the chat agent with structured input
     chat_llm = initialize_model()
     response = await chat_llm.ainvoke(
@@ -109,7 +167,9 @@ async def chat_node(state: State, config: RunnableConfig, store: BaseStore):
     # 🔥 Save memory (await to ensure it completes)
     print("[Memory] Starting memory save...")
     await save_response_memory_background(
-        state["query"], response.content, user_id, store
+        user_id=user_id,
+        store=store,
+        retrieved_data=state.get("retrieved_data"),
     )
 
     return {"final_answer": response.content, "messages": messages}

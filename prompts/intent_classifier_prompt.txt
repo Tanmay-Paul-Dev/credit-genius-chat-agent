@@ -158,3 +158,8 @@ If query_type = "greeting":
 - required_info MUST be an empty array []
 - optional_info MUST include:
   - "name"
+
+If query_type = "finance":
+- intent MUST be "finance"
+- optional_info MUST include:
+  - "name"
