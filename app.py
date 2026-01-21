@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+
 load_dotenv()  # Must be called before importing modules that use env vars
 
 import asyncio
@@ -74,10 +75,6 @@ def with_error_handling(node_name: str, error_type: ErrorType, retryable=True):
 def build_graph(store: BaseStore = None):
     graph = StateGraph(State)
 
-    # graph.add_node(
-    #     "memory_retrieval_node",
-    #     with_error_handling("memory_retrieval_node", "LLM")(memory_retrieval_node),
-    # )
     graph.add_node(
         "intent_classifier",
         with_error_handling("intent_classifier", "LLM")(intent_classifier_agent_node),
@@ -101,21 +98,12 @@ def build_graph(store: BaseStore = None):
 
     graph.set_entry_point("intent_classifier")
 
-    # graph.add_conditional_edges(
-    #     "memory_retrieval_node",
-    #     route_after_memory_retrieval,
-    #     {
-    #         "chat_node": "chat_node",
-    #         "intent_classifier": "intent_classifier",
-    #         "error_node": "error_node",
-    #     },
-    # )
-
     graph.add_conditional_edges(
         "intent_classifier",
         route_after_intent_classification,
         {
             "retriever_node": "retriever_node",
+            "chat_node": "chat_node",
             "error_node": "error_node",
         },
     )
@@ -138,6 +126,7 @@ def build_graph(store: BaseStore = None):
         },
     )
 
+    graph.add_edge("chat_node", END)
     graph.add_edge("error_node", END)
 
     # Compile with store if provided
@@ -216,7 +205,7 @@ async def chat():
                     print("\n❌ Error:")
                     print(json.dumps(result["error"], indent=2))
                 else:
-                    print("\nAgent:", result.get("final_answer", ""))
+                    print("\nAgent 🤖:  ", result.get("final_answer", ""))
                     print("-" * 50)
 
                 # Update messages for next iteration
@@ -243,4 +232,3 @@ if __name__ == "__main__":
         asyncio.run(chat())
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")
-

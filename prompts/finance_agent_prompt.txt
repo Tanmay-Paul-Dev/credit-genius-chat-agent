@@ -56,7 +56,8 @@ OUTPUT (MANDATORY):
 Always return a JSON object:
 {
   "answer": "<final answer or partial answer>",
-  "missing_info": ["list of still-missing required required_info fields"]
+  "missing_info": ["list of still-missing required required_info fields"],
+  "missing_optional_info": ["list of still-missing optional required_info fields"]
 }
 
 CONSTRAINTS:

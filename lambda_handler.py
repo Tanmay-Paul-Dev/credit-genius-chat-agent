@@ -10,6 +10,7 @@ import asyncio
 # Load environment variables (for local testing - Lambda uses environment config)
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass  # dotenv not needed in Lambda
@@ -22,7 +23,7 @@ from nodes.error_node import error_node
 from nodes.retriver_node import retriever_node
 
 from langgraph.graph import StateGraph, END
-from langgraph.store.postgres import PostgresStore
+from langgraph.store.mongodb import MongoDBStore
 from langgraph.store.base import BaseStore
 
 from states import State
@@ -37,10 +38,8 @@ from repositories.conditional_repository import (
 # ----------------------------------------
 # Configuration
 # ----------------------------------------
-DB_URI = os.getenv(
-    "DATABASE_URL",
-    "postgresql://root:Admin%40008@localhost:5432/postgres?sslmode=disable"
-)
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "credit_genius")
 
 
 # ----------------------------------------
@@ -66,7 +65,9 @@ def with_error_handling(node_name: str, error_type: ErrorType, retryable=True):
                         "attempt": previous_attempt + 1,
                     },
                 }
+
         return wrapper
+
     return wrap
 
 
@@ -141,37 +142,39 @@ async def process_message(
 ) -> dict:
     """
     Process a single message through the finance agent graph.
-    
+
     Args:
         user_id: The user's unique identifier
         message: The user's message/query
         messages: Previous conversation messages (optional)
         memory_context: User's memory context (optional)
-    
+
     Returns:
         dict with 'answer', 'messages', and optionally 'error'
     """
     messages = messages or []
     memory_context = memory_context or []
-    
-    with PostgresStore.from_conn_string(DB_URI) as store:
-        store.setup()
+
+    with MongoDBStore.from_conn_string(
+        MONGODB_URI,
+        db_name=MONGODB_DB_NAME,
+    ) as store:
         app = build_graph(store=store)
-        
+
         thread_id = f"lambda-chat-{user_id}"
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
-        
+
         # Load existing memories if memory_context is empty
         if not memory_context:
             memory_ns = ("user", user_id, "details")
             existing_memories = list(store.search(memory_ns))
             for mem in existing_memories:
                 memory_context.append(mem.value.get("data", ""))
-        
+
         # Add user message
         messages.append({"role": "user", "content": message})
         messages = messages[-10:]  # Keep only last 10 messages
-        
+
         # Build graph state
         graph_state = {
             "query": message,
@@ -188,17 +191,17 @@ async def process_message(
             "messages": messages,
             "memory_context": memory_context,
         }
-        
+
         # Invoke the graph
         result = await app.ainvoke(graph_state, config=config)
-        
+
         if result.get("error"):
             return {
                 "success": False,
                 "error": result["error"],
                 "messages": result.get("messages", messages),
             }
-        
+
         return {
             "success": True,
             "answer": result.get("final_answer", ""),
@@ -213,7 +216,7 @@ async def process_message(
 def lambda_handler(event, context):
     """
     AWS Lambda handler for the finance agent.
-    
+
     Expected event format (API Gateway):
     {
         "body": {
@@ -223,7 +226,7 @@ def lambda_handler(event, context):
             "memory_context": [...]  # optional: memory context
         }
     }
-    
+
     Or direct invocation:
     {
         "user_id": "uuid-string",
@@ -240,12 +243,12 @@ def lambda_handler(event, context):
         else:
             # Direct invocation format
             body = event
-        
+
         user_id = body.get("user_id")
         message = body.get("message")
         messages = body.get("messages", [])
         memory_context = body.get("memory_context", [])
-        
+
         # Validate required fields
         if not user_id:
             return {
@@ -253,14 +256,14 @@ def lambda_handler(event, context):
                 "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"error": "user_id is required"}),
             }
-        
+
         if not message:
             return {
                 "statusCode": 400,
                 "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"error": "message is required"}),
             }
-        
+
         # Run the async handler
         result = asyncio.run(
             process_message(
@@ -270,7 +273,7 @@ def lambda_handler(event, context):
                 memory_context=memory_context,
             )
         )
-        
+
         # Return success response
         return {
             "statusCode": 200,
@@ -282,16 +285,18 @@ def lambda_handler(event, context):
             },
             "body": json.dumps(result),
         }
-        
+
     except Exception as e:
         print(f"Lambda error: {str(e)}")
         return {
             "statusCode": 500,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({
-                "success": False,
-                "error": str(e),
-            }),
+            "body": json.dumps(
+                {
+                    "success": False,
+                    "error": str(e),
+                }
+            ),
         }
 
 
@@ -306,6 +311,6 @@ if __name__ == "__main__":
         "messages": [],
         "memory_context": [],
     }
-    
+
     result = lambda_handler(test_event, None)
     print(json.dumps(json.loads(result["body"]), indent=2))

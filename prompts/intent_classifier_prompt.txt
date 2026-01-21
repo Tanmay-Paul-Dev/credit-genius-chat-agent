@@ -148,3 +148,13 @@ STRICT RULES (NON-NEGOTIABLE)
 3. Do NOT invent user data
 4. Do NOT include explanations or extra text
 5. Deterministic output only
+
+--------------------------------------------------
+GREETING HANDLING RULE (ADDITIONAL)
+--------------------------------------------------
+
+If query_type = "greeting":
+- intent MUST be "greeting"
+- required_info MUST be an empty array []
+- optional_info MUST include:
+  - "name"

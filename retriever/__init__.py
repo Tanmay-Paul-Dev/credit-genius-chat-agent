@@ -41,7 +41,6 @@ class MMRRetriever:
         if filter_user_id:
             metadata_filter = {"userId": {"$eq": filter_user_id}}
 
-        print("Filter User ID", filter_user_id)
         # Create retriever with filter
         retriever = self.vectorstore.as_retriever(
             search_type="mmr",

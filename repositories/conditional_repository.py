@@ -12,9 +12,19 @@ def route_after_intent_classification(state: State) -> str:
         intent_obj.get("query_type", "") if isinstance(intent_obj, dict) else ""
     )
 
+    print(query_type)
+
     if query_type == "finance":
-        print(f"[Router] query_type=finance, routing to retriever_node")
         return "retriever_node"
+    
+    if query_type == "greeting":
+        return "retriever_node"
+    
+    if query_type == "faq":
+        return "chat_node"
+    
+    if query_type == "non_finance":
+        return "chat_node"
 
     return END
 
@@ -40,7 +50,6 @@ def route_after_finance_agent(state: State) -> str:
     missing_info = state["finance_agent"]["missing_info"]
 
     if missing_info and len(missing_info) > 0:
-        print(f"[Router] missing_info found: {missing_info}, routing to chat_node")
         return "chat_node"
 
     return "chat_node"

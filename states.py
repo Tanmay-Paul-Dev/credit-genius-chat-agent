@@ -28,6 +28,15 @@ class ErrorState(TypedDict):
 class FinanceAgentState(BaseModel):
     answer: str = Field(description="Answer to the user query")
     missing_info: list[str] = Field(description="List of missing information")
+    missing_optional_info: list[str] = Field(
+        description="List of missing optional information"
+    )
+
+
+class ChatAgentState(BaseModel):
+    """State for the chat agent."""
+
+    answer: str = Field(description="Answer to the user query")
 
 
 class IntentClassifierState(BaseModel):

@@ -63,98 +63,48 @@ Keep it under 100 characters. Return ONLY the sentence or "NONE"."""
 
 
 async def chat_node(state: State, config: RunnableConfig, store: BaseStore):
-    chat_llm = initialize_model()
     user_id = config["configurable"]["user_id"]
-
-    ns = ("user", user_id, "details")
-
-    # Get existing memories
-    items = list(store.search(ns))
-    existing = (
-        "\n".join(f"- {it.value.get('data', '')}" for it in items)
-        if items
+    query_type = state["intent"]["query_type"]
+    user_query = state["query"]
+    finance_agent_answer = state.get("finance_agent", {}).get("answer")
+    required_info = state.get("retrieved_data", {}).get("required_info")
+    optional_info = state.get("retrieved_data", {}).get("optional_info")
+    evidence = state.get("retrieved_data", {}).get("retrived_intent_info")
+    memories = (
+        "\n".join(f"- {it}" for it in state.get("memory_context", []))
+        if state.get("memory_context")
         else "(empty)"
     )
+    recent_cenversations = state.get("messages", [])[-10:]
 
-    # Check if we need to ask user for specific info
-    finance_agent_response = state.get("finance_agent", {})
-    missing_info = (
-        finance_agent_response.get("missing_info", [])
-        if isinstance(finance_agent_response, dict)
-        else []
-    )
+    # Build context message for the chat agent
+    context_message = f"""
+        query_type: {query_type}
+        user_query: {user_query}
+        finance_agent_response: {finance_agent_answer}
+        retrieved_data:
+        required_info: {required_info}
+        optional_info: {optional_info}
+        evidence: {evidence}
+        messages: {recent_cenversations}
+        memory: {memories}
+    """
 
-    if missing_info and len(missing_info) > 0:
-        # We need to ask the user for these fields
-        required_fields = ", ".join(missing_info)
-        ask_user_prompt = f"""You need to ask the user for the following information to help answer their query.
-        
-        User's original query: {state["query"]}
+    print(context_message)
 
-        Required information from user: {required_fields}
-
-        Generate a friendly, conversational response asking the user for this information. Be specific about what you need and why it will help answer their question.
-        Do not make up any information - just ask for what's needed."""
-
-        response = await chat_llm.ainvoke(
-            [
-                SystemMessage(
-                    content="You are a helpful assistant. Ask the user for the required information in a friendly way."
-                ),
-                {"role": "user", "content": ask_user_prompt},
-            ]
-        )
-
-        print(f"[Chat] Asking user for: {missing_info}")
-
-        # Add assistant message to short-term memory (user message already added at graph invoke)
-        messages = state.get("messages", [])
-        messages.append({"role": "assistant", "content": response.content})
-        messages = messages[-10:]  # Keep only last 10 messages
-
-        print(f"[Chat] Updated messages: {len(messages)} messages")
-
-        return {"final_answer": response.content, "messages": messages}
-
-    # Normal chat flow - when we have finance agent response or just answering a query
-    system_msg = SystemMessage(
-        content=load_prompt("chat_prompt").format(
-            user_details_content=existing or "(empty)",
-            finance_agent_response=state.get("finance_agent", "(not available)"),
-        )
-    )
-
-    # Build user prompt - only include finance_agent if available
-    finance_agent = state.get("finance_agent")
-    if finance_agent:
-        chat_node_user_prompt = f"""
-        FINANCE AGENT RESPONSE: {finance_agent}
-        USER QUERY: {state["query"]}
-        """
-    else:
-        chat_node_user_prompt = f"""
-        USER QUERY: {state["query"]}
-        """
-
-    # Get response from LLM
+    # Invoke the chat agent with structured input
+    chat_llm = initialize_model()
     response = await chat_llm.ainvoke(
-        [system_msg]
-        + [
-            {
-                "role": "user",
-                "content": chat_node_user_prompt,
-            }
+        [
+            SystemMessage(content=load_prompt("chat_prompt")),
+            {"role": "user", "content": context_message},
         ]
     )
-
-    print(f"[Chat] Response: {response.content}")
 
     # Add assistant message to short-term memory (user message already added at graph invoke)
     messages = state.get("messages", [])
     messages.append({"role": "assistant", "content": response.content})
     messages = messages[-10:]  # Keep only last 10 messages
-
-    print(f"[Chat] Updated messages: {len(messages)} messages")
 
     # 🔥 Save memory (await to ensure it completes)
     print("[Memory] Starting memory save...")

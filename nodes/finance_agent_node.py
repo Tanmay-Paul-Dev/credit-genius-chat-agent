@@ -21,10 +21,6 @@ async def finance_agent_node(state: State, config: RunnableConfig, store: BaseSt
     retrieved_data = state.get("retrieved_data", {})
     required_info = state["intent"].get("required_info", {})
 
-    print(
-        "retrived_data",
-    )
-
     # Trim messages for context window
     trimmed_messages = trim_messages(
         state["messages"],
@@ -53,8 +49,6 @@ async def finance_agent_node(state: State, config: RunnableConfig, store: BaseSt
         },
         indent=2,
     )
-
-    print("::::context_message", context_message)
 
     # 3️⃣ Create agent with retriever and web_search tools
     finance_agent: FinanceAgentState = create_agent(
@@ -93,10 +87,6 @@ async def finance_agent_node(state: State, config: RunnableConfig, store: BaseSt
         response = json.loads(raw_content)
     except json.JSONDecodeError:
         response = {"answer": "Sorry, I couldn't process your request properly."}
-
-    print(f"Tokens Count:", count_tokens_approximately(state["messages"]))
-    print(f"Total Messages: {len(state['messages'])}")
-    print(f"Messages: {state['messages']}")
 
     return {
         **state,
