@@ -4,7 +4,7 @@ load_dotenv()  # Must be called before importing modules that use env vars
 
 import asyncio
 import json
-from pymongo import MongoClient
+from pymongo import MongoClient  # Keep for potential direct MongoDB operations
 
 from states import State, ErrorType
 from nodes.intent_classifier_node import intent_classifier_agent_node
@@ -17,7 +17,7 @@ from nodes.memory_retrieval_node import memory_retrieval_node
 from nodes.retriver_node import retriever_node
 
 from langgraph.graph import StateGraph, START, END, MessagesState
-from langgraph.store.postgres import PostgresStore
+from langgraph.store.mongodb import MongoDBStore
 from langgraph.store.base import BaseStore
 
 from states import State, MemoryDecision
@@ -35,9 +35,8 @@ from repositories.conditional_repository import (
 # ----------------------------------------
 # ENV & DB
 # ----------------------------------------
-client = MongoClient("mongodb://localhost:27017")
-
-DB_URI = "postgresql://root:Admin%40008@localhost:5432/postgres?sslmode=disable"
+MONGO_URI = "mongodb://localhost:27017"
+MONGO_DB = "credit_genius"
 
 
 # ----------------------------------------
@@ -139,11 +138,8 @@ def build_graph(store: BaseStore = None):
 # TERMINAL CHAT LOOP
 # ----------------------------------------
 async def chat():
-    # Use PostgresStore for memory persistence
-    with PostgresStore.from_conn_string(DB_URI) as store:
-        # Setup the store (run once for new database)
-        store.setup()
-
+    # Use MongoDBStore for memory persistence
+    with MongoDBStore.from_conn_string(MONGO_URI, db_name=MONGO_DB) as store:
         # Build graph with store
         app = build_graph(store=store)
 
@@ -151,7 +147,7 @@ async def chat():
         thread_id = f"terminal-chat-{user_id}"
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
-        print("\n💬 Finance Agent Terminal Chat (with Postgres Memory)")
+        print("\n💬 Finance Agent Terminal Chat (with MongoDB Memory)")
         print("Type 'exit' or 'quit' to stop\n")
 
         # Initialize messages list
