@@ -48,34 +48,37 @@ async def save_response_memory_background(
             return
 
         # Ask LLM to determine what's important to store
-        prompt = f"""Analyze the following user data and determine which items are IMPORTANT to remember for future financial conversations.
+        prompt = f"""Analyze the following user data and determine which items are IMPORTANT to remember for future conversations.
 
-RETRIEVED USER DATA:
-{all_data}
+        RETRIEVED USER DATA:
+        {all_data}
 
-ALREADY STORED IN MEMORY:
-{existing_memories}
+        ALREADY STORED IN MEMORY:
+        {existing_memories}
 
-TASK:
-Select ONLY the data that is:
-1. Important for future financial decisions (credit scores, income, loan amounts, employment)
-2. NOT already stored in memory
-3. Specific factual data about the user
+        TASK:
+        Select the data that is IMPORTANT for personalization and future financial decisions:
+        1. User's name (ALWAYS store if available)
+        2. User's location/city (important for loan eligibility)
+        3. Credit scores
+        4. Income and employment status
+        5. Loan amounts and financial goals
+        6. Any other personal factual data about the user
 
-DO NOT store:
-- Temporary or transient information
-- Generic descriptions or summaries
-- Data that's already stored
-- Addresses or locations (unless specifically relevant to loans)
+        DO NOT store:
+        - Data that's already stored in memory
+        - Generic descriptions or long summaries
+        - Temporary or transient information
+        - Duplicate information (even if worded differently)
 
-For each important item, return it as a short sentence.
-Return ONLY a JSON array of strings, each being a memory to store.
-If nothing is important enough to store, return an empty array [].
+        For each important item, return it as a short sentence.
+        Return ONLY a JSON array of strings, each being a memory to store.
+        If nothing NEW is important enough to store, return an empty array [].
 
-Example output:
-["User's credit score is 716", "User's income is $5000 per month"]
+        Example output:
+        ["User's name is Henry Vander", "User is located in Charlotte, NC", "User's credit score is 716", "User's income is $5000 per month"]
 
-Return ONLY the JSON array, nothing else."""
+        Return ONLY the JSON array, nothing else."""
 
         response = await llm.ainvoke([SystemMessage(content=prompt)])
         
