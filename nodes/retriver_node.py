@@ -14,12 +14,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.store.base import BaseStore
 from retriever import MMRRetriever
 from services.pinecone_service import vectorstore
-from services.opanai_service import initialize_model
+from services.opanai_service import large_model
 
 
-# Initialize model for structured extraction
-model = initialize_model()
-
+def build_composite_query(missing_fields: List[str]) -> str:
+    """Build a descriptive composite query for vector store retrieval."""
+    return ", ".join(missing_fields)
 
 async def retriever_node(
     state: State, config: RunnableConfig, store: BaseStore
@@ -52,13 +52,28 @@ async def retriever_node(
         vectorstore=vectorstore, k=5, fetch_k=20, lambda_mult=0.6, user_id=user_id
     )
 
-    # Step 1: Try to extract ALL fields from memory and recent messages in one go
+    # Step 1 & Step 3: Run in PARALLEL
+    # - Step 1: Extract fields from memory/messages
+    # - Step 3: Retrieve intent info from vector store
     print(f"\n[Retriever] 🔍 Extracting all fields from memory/messages: {all_fields}")
-    memory_extracted = await _extract_all_fields_from_memory(
-        all_fields, recent_messages, memory
+    print(f"[Retriever] ⚡ Running Steps 1 & 3 in parallel...")
+
+    import asyncio
+
+    # Define async wrapper for sync retriever call (Step 3)
+    async def retrieve_intent_async():
+        return retriever.retrieve(intent, user_id=user_id)
+
+    # Run Step 1 and Step 3 in parallel
+    memory_extracted, intent_docs = await asyncio.gather(
+        _extract_all_fields_from_memory(all_fields, recent_messages, memory),
+        retrieve_intent_async()
     )
 
-    # Update retrieved_data with memory-extracted values
+    # Process intent data from Step 3
+    intent_data = intent_docs[0].page_content if intent_docs else ""
+
+    # Update retrieved_data with memory-extracted values from Step 1
     missing_fields = []
     for field in required_info_list:
         if memory_extracted.get(field) is not None:
@@ -74,19 +89,18 @@ async def retriever_node(
         else:
             missing_fields.append(field)
 
-    # Step 2: For missing fields, batch retrieve from vector store
+    # Step 2: For missing fields ONLY, batch retrieve from vector store using composite query
     if missing_fields:
-        print(f"\n[Retriever] � Missing fields, checking vector store: {missing_fields}")
+        print(f"\n[Retriever] 🔄 Missing fields, retrieving from vector store: {missing_fields}")
 
-        # Retrieve documents for all missing fields at once
-        all_docs = []
-        for field in missing_fields:
-            docs = retriever.retrieve(field, user_id=user_id)
-            if docs:
-                all_docs.extend(docs)
+        # Create composite query from all missing fields
+        composite_query = build_composite_query(missing_fields)
+
+        print(f"[Retriever] 🔍 Composite query: {composite_query}")
+        all_docs = retriever.retrieve(composite_query, user_id=user_id)
 
         if all_docs:
-            # Build context from all retrieved documents (deduplicate by content)
+            # Build context from retrieved documents (deduplicate by content)
             seen_content = set()
             unique_docs = []
             for doc in all_docs:
@@ -117,13 +131,7 @@ async def retriever_node(
         else:
             print(f"[Retriever] ❌ No documents found for missing fields")
 
-    # Retrieve The Intent Information
-    intent_data = retriever.retrieve(intent, user_id=user_id)
-    if intent_data:
-        intent_data = intent_data[0].page_content
-    else:
-        intent_data = ""
-
+    # Add intent data to retrieved_data
     retrieved_data = {**retrieved_data, "retrived_intent_info": intent_data}
 
     return {
@@ -150,7 +158,7 @@ async def _extract_all_fields_from_memory(
     MultiFieldModel = create_model("MultiFieldExtraction", **field_definitions)
 
     # Create structured output model
-    extractor = model.with_structured_output(
+    extractor = large_model.with_structured_output(
         MultiFieldModel, method="function_calling"
     )
 
@@ -210,7 +218,7 @@ async def _extract_all_fields_from_context(
     MultiFieldModel = create_model("MultiFieldExtraction", **field_definitions)
 
     # Create structured output model
-    extractor = model.with_structured_output(
+    extractor = large_model.with_structured_output(
         MultiFieldModel, method="function_calling"
     )
 

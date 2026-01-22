@@ -1,7 +1,7 @@
 from langgraph.store.base import BaseStore
 from states import State, MemoryDecision
 from langchain_core.messages import SystemMessage
-from services.opanai_service import initialize_model
+from services.opanai_service import small_model, large_model
 from utils.prompt_loader import load_prompt
 from langchain_core.runnables import RunnableConfig
 import asyncio
@@ -22,7 +22,6 @@ async def save_response_memory_background(
             print("[Memory] No retrieved data to save")
             return
 
-        llm = initialize_model()
         ns = ("user", user_id, "details")
 
         # Get existing memories to check for duplicates
@@ -62,7 +61,6 @@ async def save_response_memory_background(
         2. User's location/city (important for loan eligibility)
         3. Credit scores
         4. Income and employment status
-        5. Loan amounts and financial goals
         6. Any other personal factual data about the user
 
         DO NOT store:
@@ -70,6 +68,7 @@ async def save_response_memory_background(
         - Generic descriptions or long summaries
         - Temporary or transient information
         - Duplicate information (even if worded differently)
+        - Future Goals like (loan amount/purpose)
 
         For each important item, return it as a short sentence.
         Return ONLY a JSON array of strings, each being a memory to store.
@@ -80,7 +79,7 @@ async def save_response_memory_background(
 
         Return ONLY the JSON array, nothing else."""
 
-        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        response = await small_model.ainvoke([SystemMessage(content=prompt)])
         
         # Parse the response
         import json
@@ -154,8 +153,7 @@ async def chat_node(state: State, config: RunnableConfig, store: BaseStore):
     """
 
     # Invoke the chat agent with structured input
-    chat_llm = initialize_model()
-    response = await chat_llm.ainvoke(
+    response = await large_model.ainvoke(
         [
             SystemMessage(content=load_prompt("chat_prompt")),
             {"role": "user", "content": context_message},

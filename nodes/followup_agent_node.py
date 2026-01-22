@@ -1,6 +1,6 @@
 from langchain.agents import create_agent
 from typing import TypedDict
-from services.opanai_service import model
+from services.opanai_service import small_model
 from tools.fetch_user_info import fetch_user_info
 from tools.retrieve_knowledge import retriever_tool
 from states import State
@@ -12,7 +12,7 @@ from states import State, MemoryDecision
 from langchain_core.runnables import RunnableConfig
 
 followup_agent = create_agent(
-    model,
+    model=small_model,
     tools=[],
     system_prompt=load_prompt("followup_agent_prompt"),
 )

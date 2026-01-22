@@ -1,7 +1,8 @@
 import json
 from langchain.agents import create_agent
 from langchain_core.messages.utils import trim_messages, count_tokens_approximately
-from services.opanai_service import model
+from services.opanai_service import large_model
+
 from tools.retrieve_knowledge import retriever_tool
 from tools.web_search_tool import web_search_tool
 from states import State
@@ -52,7 +53,7 @@ async def finance_agent_node(state: State, config: RunnableConfig, store: BaseSt
 
     # 3️⃣ Create agent with retriever and web_search tools
     finance_agent: FinanceAgentState = create_agent(
-        model=model,
+        model=large_model,
         tools=[web_search_tool],
         system_prompt=load_prompt("finance_agent_prompt"),
     )

@@ -1,4 +1,4 @@
-from services.opanai_service import initialize_model
+from services.opanai_service import small_model
 from langgraph.graph import StateGraph, START, END, MessagesState
 import uuid
 from langchain_core.messages import SystemMessage
@@ -22,8 +22,6 @@ Determine if you can answer the user's question DIRECTLY from the stored memorie
 
 
 async def memory_node(state: State, config: RunnableConfig, store: BaseStore):
-    model = initialize_model()
-
     user_id = config["configurable"]["user_id"]
     ns = ("user", user_id, "details")
 
@@ -45,7 +43,7 @@ async def memory_node(state: State, config: RunnableConfig, store: BaseStore):
 
     # 1️⃣ Check if query can be answered from memory
     if items:  # Only check if there are memories
-        memory_lookup = model.with_structured_output(MemoryLookupResult)
+        memory_lookup = small_model.with_structured_output(MemoryLookupResult)
         lookup_result: MemoryLookupResult = await memory_lookup.ainvoke(
             [
                 SystemMessage(
@@ -67,7 +65,7 @@ async def memory_node(state: State, config: RunnableConfig, store: BaseStore):
             }
 
     # 2️⃣ Check if we should store new memories
-    memory_extractor = model.with_structured_output(MemoryDecision)
+    memory_extractor = small_model.with_structured_output(MemoryDecision)
     decision: MemoryDecision = await memory_extractor.ainvoke(
         [
             SystemMessage(

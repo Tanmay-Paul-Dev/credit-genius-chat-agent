@@ -1,4 +1,4 @@
-from services.opanai_service import initialize_model
+from services.opanai_service import small_model
 from langchain_core.messages import SystemMessage
 from langgraph.store.base import BaseStore
 from states import State, MemoryLookupResult
@@ -23,8 +23,6 @@ async def memory_retrieval_node(state: State, config: RunnableConfig, store: Bas
     Retrieves relevant memories from the store based on user query.
     Sets found_in_memory=True and memory_context if relevant memories exist.
     """
-    model = initialize_model()
-
     user_id = config["configurable"]["user_id"]
     ns = ("user", user_id, "details")
 
@@ -46,7 +44,7 @@ async def memory_retrieval_node(state: State, config: RunnableConfig, store: Bas
 
     # Check if query can be answered from memory
     if items:
-        memory_lookup = model.with_structured_output(MemoryLookupResult)
+        memory_lookup = small_model.with_structured_output(MemoryLookupResult)
         lookup_result: MemoryLookupResult = await memory_lookup.ainvoke(
             [
                 SystemMessage(
