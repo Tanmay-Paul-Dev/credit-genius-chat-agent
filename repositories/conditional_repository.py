@@ -16,13 +16,13 @@ def route_after_intent_classification(state: State) -> str:
 
     if query_type == "finance":
         return "retriever_node"
-    
+
     if query_type == "greeting":
         return "retriever_node"
-    
+
     if query_type == "faq":
         return "chat_node"
-    
+
     if query_type == "non_finance":
         return "chat_node"
 

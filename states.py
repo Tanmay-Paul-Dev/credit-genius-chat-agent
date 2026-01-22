@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import TypedDict, Annotated
 from typing import Optional, Literal, Dict
 from pydantic import BaseModel, Field
 from typing import List
@@ -8,6 +8,15 @@ from typing import List, Any
 from pydantic import BaseModel, Field
 
 ErrorType = Literal["LLM", "TOOL", "NETWORK", "LOGIC"]
+
+
+def merge_intent_dicts(current: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+    """Reducer to merge intent dicts from parallel nodes."""
+    if current is None:
+        return update or {}
+    if update is None:
+        return current
+    return {**current, **update}
 
 
 class IntentEnum(str, Enum):
@@ -43,6 +52,8 @@ class IntentClassifierState(BaseModel):
     query_type: str = Field(
         description="Type of query: finance, faq, non_finance, greeting"
     )
+    
+class RequirementExtractorState(BaseModel):
     intent: str = Field(description="Specific user intent")
     required_info: List[str] = Field(
         default_factory=list, description="Required info fields"
@@ -50,7 +61,6 @@ class IntentClassifierState(BaseModel):
     optional_info: List[str] = Field(
         default_factory=list, description="Optional info fields"
     )
-
 
 class IntentClassification(TypedDict):
     intent: str
@@ -87,7 +97,7 @@ class State(TypedDict):
     memory_context: Optional[List[str]]  # Retrieved memories relevant to query
     messages: MessagesState
     is_profile_complete: bool
-    intent: IntentClassification
+    intent: Annotated[Dict[str, Any], merge_intent_dicts]
     tier: str  # TODO: Make it subscription_type
     user_id: str
     final_answer: Optional[str]

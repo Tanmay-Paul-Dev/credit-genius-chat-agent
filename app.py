@@ -11,6 +11,7 @@ from nodes.intent_classifier_node import intent_classifier_agent_node
 from nodes.rule_builder_node import rule_builder_node
 from nodes.finance_agent_node import finance_agent_node
 from nodes.followup_agent_node import followup_agent_node
+from nodes.requirements_extractor_node import requirement_extractor_node
 from nodes.chat_node import chat_node
 from nodes.error_node import error_node
 from nodes.memory_retrieval_node import memory_retrieval_node
@@ -78,6 +79,14 @@ def build_graph(store: BaseStore = None):
         "intent_classifier",
         with_error_handling("intent_classifier", "LLM")(intent_classifier_agent_node),
     )
+
+    graph.add_node(
+        "requirements_extractor",
+        with_error_handling("requirements_extractor", "LLM")(
+            requirement_extractor_node
+        ),
+    )
+
     graph.add_node(
         "retriever_node",
         with_error_handling("retriever_node", "LLM")(retriever_node),
@@ -95,17 +104,13 @@ def build_graph(store: BaseStore = None):
 
     graph.add_node("error_node", error_node)
 
-    graph.set_entry_point("intent_classifier")
-
-    graph.add_conditional_edges(
-        "intent_classifier",
-        route_after_intent_classification,
-        {
-            "retriever_node": "retriever_node",
-            "chat_node": "chat_node",
-            "error_node": "error_node",
-        },
-    )
+    # Parallel execution from START
+    graph.add_edge(START, "intent_classifier")
+    graph.add_edge(START, "requirements_extractor")
+    
+    # Both merge into retriever_node
+    graph.add_edge("intent_classifier", "retriever_node")
+    graph.add_edge("requirements_extractor", "retriever_node")
 
     graph.add_conditional_edges(
         "retriever_node",

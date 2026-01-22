@@ -1,431 +1,152 @@
-# LangGraph Demo - AI Agent Instructions
+# LangGraph Finance Agent - AI Coding Instructions
 
-## Project Overview
+## Architecture Overview
 
-This is a **LangGraph-based multi-agent system** for financial analysis with intelligent routing, automatic fault tolerance, and user profile management. The system classifies intents, applies tier-based rules, routes to specialized agents, handles missing user data with followup prompts, and automatically retries failed nodes using MongoDB checkpointing.
+This is a **LangGraph-based conversational finance agent** designed for AWS Lambda deployment. The system routes user queries through a multi-node graph where each node performs specific tasks (intent classification, data retrieval, agent reasoning, memory management).
 
-## Architecture
+**Key Flow**: User Query → Intent Classification → Memory Retrieval → Data Retrieval → Finance/Chat Agent → Response + Memory Storage
 
-### Core Components
+## Core Architecture Patterns
 
-- **`app.py`**: Main orchestrator with StateGraph and MongoDB checkpointing. Flow:
-  - Entry: `intent_classifier` → `rule_builder_node` → `finance_agent_node`
-  - If finance agent has `missing_info`: → `followup_agent_node` → END
-  - On error: Dual-layer retry (internal graph + external wrapper)
-  - Uses `with_error_handling()` wrapper for all nodes except `error_node`
-  - External retry via `run_with_auto_retry()` with configurable strategies
-- **`nodes/`**: Mix of LangChain agents and data processing functions:
-  - **Agent nodes**: `intent_classifier`, `finance_agent_node`, `followup_agent_node` (use `create_agent()`)
-  - **Processing nodes**: `rule_builder_node`, `tier_detector`, `error_node` (direct state manipulation)
-  - Structure: `__init__.py` exports main function, `agent.py` contains logic, `prompt.py` has `SYSTEM_PROMPT`
-- **`tools/`**: LangChain `@tool` wrappers for agent consumption:
-  - `select_intent.py`: Intent classification
-  - `fetch_user_info.py`, `fetch_credit_info.py`: User data retrieval
-  - `retrieve_knowledge.py`: RAG retrieval tool
-  - `web_search_tool.py`: DuckDuckGo search
-- **`prompts/`**: Text files loaded via `utils/prompt_loader.py`:
-  - `finance_agent_prompt.txt`: Base prompt with `{{response_style}}` placeholder
-  - `rule_builder_node` injects tier-specific rules into placeholders
-- **`services/`**: Shared initialization:
-  - `opanai_service.py`: ChatOpenAI model (gpt-4o-mini, temp=0.1)
-  - `qdrant_service.py`: QdrantClient for vector DB
-  - `checkpoint_service.py`: MongoDB for conversation persistence
-- **`retriever/`**: `MMRRetriever` class for user-filtered vector search with diversity
-- **`repositories/`**: Data access layer for Qdrant queries
-- **`utils/`**:
-  - `intents.py`: Intent constants
-  - `prompt_loader.py`: File-based prompt loading
-  - `retry_handler.py`: **Automatic retry with checkpointing** (4 strategies: exponential, linear, fixed, fibonacci)
-  - `agent_message_builder.py`: Message formatting utilities
+### 1. **Graph Structure** (`app.py`, `lambda_handler.py`)
 
-### State Management
+- All nodes are wrapped with `with_error_handling(node_name, error_type)` decorator for centralized error handling
+- Nodes must have signature: `async def node(state: State, config: RunnableConfig, store: BaseStore)`
+- Conditional routing is defined in `repositories/conditional_repository.py` - routes return node names as strings
+- Graph compilation uses `StateGraph(State)` with MongoDBStore for persistence
+- Entry points use `START` constant, exits use `END` constant or named exit nodes
 
-State flows through graph as TypedDict in `states.py`:
+### 2. **State Management** (`states.py`)
 
-```python
-class State(TypedDict):
-    query: str                          # User's question
-    is_profile_complete: bool           # Profile status flag
-    intent: str                         # "finance" (hardcoded in current impl)
-    tier: str                           # "PAID" or "FREE" (affects response style)
-    user_id: str                        # UUID for Qdrant filtering
-    final_answer: str                   # User-facing response
-    rule_prompt: str                    # Tier-customized prompt from rule_builder
-    finance_agent: FinanceAgentState    # {answer: Dict, missing_info: list}
-    error: Optional[ErrorState]         # Error tracking for retries
-```
+- Central `State` TypedDict contains all graph state (query, messages, intent, retrieved_data, memory_context, etc.)
+- Structured output models use Pydantic BaseModel (e.g., `IntentClassifierState`, `FinanceAgentState`)
+- Error state tracking: `ErrorState` with node, message, type, retryable, and attempt count
+- State updates return partial dict that merges into existing state
 
-**CRITICAL**: LangGraph throws `InvalidUpdateError` if multiple nodes update same state key concurrently. Use sequential routing with conditional edges. Each node should update unique state keys or return full state dict.
+### 3. **Memory System** (MongoDB-backed)
 
-### Error Handling Pattern
+- Uses LangGraph's `MongoDBStore` for user memory persistence
+- Namespace pattern: `("user", user_id, "details")` for user-specific memories
+- Memory retrieval happens BEFORE intent classification to check if query answerable from memory
+- Memory storage happens AFTER chat response in background (see `save_response_memory_background`)
+- LLM-driven memory decisions using `MemoryDecision` model (determines what's worth storing)
 
-**Dual-layer retry system**: Internal graph retry (disabled by default) + External wrapper retry
+### 4. **Async Patterns**
 
-All nodes except `error_node` are wrapped with `with_error_handling(node_name, error_type, retryable=True)`:
+- **All node functions are async** - use `await` for LLM calls, tool invocations, store operations
+- Terminal chat uses `asyncio.run(chat())` - see `app.py` main block
+- Lambda handler uses `asyncio.run(process_message(...))` for AWS Lambda compatibility
+- Background tasks run synchronously after main response (memory storage is not awaited)
+
+## Node Development Conventions
+
+### Adding New Nodes
+
+1. Create file in `nodes/` with async function matching signature: `async def my_node(state: State, config: RunnableConfig, store: BaseStore)`
+2. Add error handling wrapper in graph builder: `with_error_handling("node_name", "LLM")(my_node)`
+3. Add conditional routing logic in `repositories/conditional_repository.py` if needed
+4. Connect edges in graph builder using `graph.add_edge()` or `graph.add_conditional_edges()`
+
+### Node Implementation Pattern
 
 ```python
-graph.add_node(
-    "finance_agent_node",
-    with_error_handling("finance_agent_node", "LLM")(finance_agent_node)
-)
+async def example_node(state: State, config: RunnableConfig, store: BaseStore):
+    # 1. Extract data from state
+    query = state.get("query", "")
+    user_id = config["configurable"]["user_id"]
+
+    # 2. Access memory store if needed
+    ns = ("user", user_id, "details")
+    items = list(store.search(ns))
+
+    # 3. Call LLM with structured output
+    model = large_model.with_structured_output(MyOutputModel)
+    result = await model.ainvoke(prompt)
+
+    # 4. Return state update (partial dict)
+    return {"field_name": result.field_value}
 ```
 
-On error:
+## Service & Integration Patterns
 
-1. Wrapper catches exception, populates `state["error"]` with node name, message, type, attempt count
-2. Routes to `error_node` which logs error and increments retry counter
-3. `retry_router` checks `attempt < MAX_RETRIES` (default: 0) and routes back to failed node or END
-4. External `run_with_auto_retry()` wrapper provides cross-restart retry capability
-5. **MUST map all retryable nodes** in `error_node` conditional edges:
-   ```python
-   graph.add_conditional_edges("error_node", retry_router, {
-       "intent_classifier": "intent_classifier",
-       "finance_agent_node": "finance_agent_node",
-       # ... all other nodes
-       END: END
-   })
-   ```
+### OpenAI Service (`services/opanai_service.py`)
 
-**Production workflow for fixing errors:**
+- Pre-initialized models: `small_model` (gpt-4o-mini), `large_model` (gpt-5.2)
+- Use `.with_structured_output(PydanticModel)` for type-safe LLM responses
+- Structured output uses `method="function_calling"` parameter
 
-1. Node fails → Checkpoint saved with error state
-2. Developer fixes bug in code
-3. App resumes with `payload=None` → Clears error with `{"error": None}` → Retries with fixed code
+### Vector Store (`services/pinecone_service.py`)
 
-### External Dependencies
+- Pinecone vectorstore initialized with namespace from env (`PINECONE_NAMESPACE`)
+- MMR retrieval via custom `MMRRetriever` class in `retriever/__init__.py`
+- User-scoped queries filter by `{"userId": {"$eq": user_id}}` metadata
+- Retriever pattern: `retriever.retrieve(query, user_id=user_id)` returns list of Documents
 
-- **MongoDB** (`localhost:27017`): Conversation checkpointing with `MongoDBSaver`
-- **Qdrant Vector DB** (`localhost:6333` from `.env`):
-  - Collection: `VECTOR_DB_COLLECTION_NAME`
-  - Fields: `user_id`, `category`, `summary`, `topics`, vector embeddings
-  - Use `query_points()` with `Filter` and `FieldCondition`
-- **OpenAI API**: gpt-4o-mini, embeddings: `text-embedding-3-small`
+### Prompt Loading (`utils/prompt_loader.py`)
 
-## Key Patterns
+- Prompts stored as `.txt` files in `prompts/` directory
+- Load with: `load_prompt("prompt_name")` - auto-resolves to `prompts/prompt_name.txt`
+- Supports variable substitution: `load_prompt("name", var1="value")` replaces `{{var1}}` in prompt
 
-### 0. Automatic Retry with Checkpointing (CRITICAL)
+## Critical Workflows
 
-**Simple usage** (recommended):
-
-```python
-from utils.retry_handler import run_with_auto_retry
-
-result = await run_with_auto_retry(
-    app=app,
-    payload=initial_state,  # or None to resume from checkpoint
-    config={"configurable": {"thread_id": "user-123"}},
-    max_retries=3,
-    initial_backoff=1.0
-)
-```
-
-**How it works:**
-
-- Attempt 1: `app.ainvoke(payload)` → Node fails → Checkpoint saved
-- Attempt 2+: `app.ainvoke({"error": None})` → Clears error, resumes from checkpoint
-- Skips successful nodes, retries only failed node with exponential backoff
-
-**Advanced with callbacks:**
-
-```python
-from utils.retry_handler import AutoRetryHandler, RetryStrategy
-
-handler = AutoRetryHandler(
-    max_retries=5,
-    initial_backoff=2.0,
-    strategy=RetryStrategy.FIBONACCI,  # exponential, linear, fixed, fibonacci
-    on_retry=lambda attempt, backoff: send_alert(f"Retry {attempt}"),
-    on_error=lambda error, attempt: log_failure(error)
-)
-result = await handler.run(app, payload, config)
-```
-
-**Resume after app restart:**
-
-```python
-# Use same thread_id, pass None to resume from checkpoint
-result = await run_with_auto_retry(
-    app=app,
-    payload=None,  # ← Resumes from last checkpoint
-    config={"configurable": {"thread_id": "user-123"}},
-    max_retries=3
-)
-```
-
-### 1. Dual Architecture: Agents vs Nodes
-
-**Agents** (use LangChain tools):
-
-```python
-# nodes/finance_agent_node/agent.py
-finance_agent = create_agent(model, tools=[retriever_tool], system_prompt=state["rule_prompt"])
-async def finance_agent_node(state: State):
-    result = await finance_agent.ainvoke({"messages": [{"role": "user", "content": query}]})
-    # Parse JSON response with answer and missing_info
-    state["finance_agent"] = {"answer": {...}, "missing_info": [...]}
-    return state
-```
-
-**Nodes** (direct data processing):
-
-```python
-# nodes/rule_builder_node/__init__.py
-async def rule_builder_node(state: State) -> State:
-    tier = state.get("tier", "FREE")
-    base_prompt = load_prompt("finance_agent_prompt")
-    prompt = inject_rules(base_prompt=base_prompt, rules=RULES[tier])
-    return {"rule_prompt": prompt}  # Partial state update
-```
-
-### 2. Tier-Based Prompt Customization
-
-`rule_builder_node` injects tier-specific rules into prompt placeholders:
-
-```python
-# prompts/finance_agent_prompt.txt contains: {{response_style}}
-# RULES["PAID"]["response_style"] = ["Provide detailed explanations...", ...]
-# Result: Placeholder replaced with bullet list of rules
-```
-
-### 3. Missing Info Flow (Finance → Followup)
-
-`finance_agent_node` returns JSON with `missing_info` array:
-
-```python
-{"answer": "Sorry, we don't have this data.", "missing_info": ["credit score"]}
-```
-
-`route_after_finance_agent()` checks for `missing_info` and routes to `followup_agent_node`:
-
-```python
-if finance_agent_response.get("missing_info") and len(missing_info) > 0:
-    return "followup_agent_node"
-```
-
-`followup_agent_node` asks user to complete profile with examples:
-
-```python
-# Prompt: "Please complete your profile. You can mention your credit score (e.g., 750)."
-```
-
-### 4. JSON Response Parsing Pattern
-
-Finance agent returns strict JSON. Node parses with fallback:
-
-```python
-try:
-    parsed = json.loads(response)
-    state["finance_agent"] = {
-        "answer": parsed.get("answer", {}),
-        "missing_info": parsed.get("missing_info", [])
-    }
-except (json.JSONDecodeError, TypeError):
-    # Fallback: wrap raw response
-    state["finance_agent"] = {"answer": {"response": response}, "missing_info": []}
-```
-
-### 5. Conditional Routing Pattern
-
-All routing functions must map all possible return values:
-
-```python
-def route_after_finance_agent(state: State) -> str:
-    if state.get("error"):
-        return "error_node"
-
-    finance_agent_response = state.get("finance_agent", {})
-    missing_info = finance_agent_response.get("missing_info", [])
-
-    if missing_info and len(missing_info) > 0:
-        return "followup_agent_node"
-
-    return END
-
-# In app.py graph definition:
-graph.add_conditional_edges(
-    "finance_agent_node",
-    route_after_finance_agent,
-    {
-        "error_node": "error_node",
-        "followup_agent_node": "followup_agent_node",
-        END: END  # ALL possible returns must be mapped
-    }
-)
-```
-
-### 6. Qdrant Query Patterns
-
-**With category filter**:
-
-```python
-Filter(must=[
-    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-    FieldCondition(key="category", match=MatchValue(value="CREDIT_SCORE"))
-])
-qdrant_client.query_points(collection_name=..., query_filter=filter, limit=10).points
-```
-
-**With vector search**:
-
-```python
-from langchain_openai import OpenAIEmbeddings
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-vector = embeddings.embed_query("credit score")
-qdrant_client.query_points(collection_name=..., query=vector, query_filter=user_filter, limit=5).points
-```
-
-## Development Workflow
-
-### Running the Application
+### Local Development
 
 ```bash
-python app.py  # Executes query at bottom of file
+# Install dependencies
+pip install -r requirements.txt
+
+# Set environment variables (create .env)
+OPENAI_API_KEY=sk-...
+MONGODB_URI=mongodb://localhost:27017
+PINECONE_API_KEY=...
+PINECONE_DB_NAME=credit-genius-production
+
+# Run terminal chat interface
+python app.py
 ```
 
-### Testing Retry Mechanism
+### Lambda Deployment
 
-```bash
-python test_retry.py  # Runs 5 test scenarios for retry functionality
-```
+- Entry point: `lambda_handler.handler(event, context)` in `lambda_handler.py`
+- Expects event with: `{"user_id": "...", "query": "...", "thread_id": "..."}`
+- Returns: `{"statusCode": 200, "body": json_response}`
+- Lambda graph is simplified (fewer nodes than `app.py` development version)
 
-### Production API Example
-
-```bash
-pip install fastapi uvicorn  # If not installed
-python api_example.py  # FastAPI server with automatic retry on port 8000
-```
-
-### Environment Setup
-
-`.env` file must contain:
-
-```bash
-OPENAI_API_KEY=sk-proj-...
-VECTOR_DB_URL=http://localhost:6333
-VECTOR_DB_COLLECTION_NAME=credit_data
-```
-
-**MongoDB** must be running on `localhost:27017` for checkpointing.
-
-### Adding a New Agent Node
-
-1. `mkdir nodes/{name}` with `__init__.py`, `agent.py`, `prompt.py`
-2. In `prompt.py`: Define `SYSTEM_PROMPT = "..."`
-3. In `agent.py`:
-   - Import: `from services.opanai_service import model`
-   - Import tools: `from tools.{tool} import {tool}`
-   - Create: `agent = create_agent(model, tools=[...], system_prompt=SYSTEM_PROMPT)`
-   - Implement: `async def {name}_node(state: State): ...` (update specific state key)
-4. In `__init__.py`: `from .agent import {name}_node`
-5. In `app.py`:
-   - Add node with error handling: `graph.add_node("{name}", with_error_handling("{name}", "LLM")({name}_node))`
-   - Add to conditional edges mappings
-   - Update routing logic
-
-### Simulating Errors for Testing
-
-To test retry mechanism, add a simulated error in any node:
+### Testing Individual Nodes
 
 ```python
-# In nodes/finance_agent_node/agent.py
-async def finance_agent_node(state: State):
-    # Simulate error for testing
-    raise ValueError("🧪 Simulated error for testing automatic retry")
-
-    # Normal code below...
+# Create minimal test state
+test_state = {
+    "query": "test query",
+    "messages": [],
+    "user_id": "test-user",
+    "intent": {},
+    "tier": "PAID"
+}
+test_config = {"configurable": {"user_id": "test-user", "thread_id": "test"}}
+# Call node directly (requires store initialization)
 ```
 
-Run the app and observe automatic retry attempts with exponential backoff.
+## Key Differences & Gotchas
 
-### Adding a New Tool
+1. **Two Graph Definitions**: `app.py` (full development graph with all nodes) vs `lambda_handler.py` (simplified production graph)
+2. **Config Access**: User context via `config["configurable"]["user_id"]`, thread via `config["configurable"]["thread_id"]`
+3. **Message Trimming**: Use `trim_messages()` from langchain_core to stay within context limits (see `finance_agent_node.py`)
+4. **Store vs Repository**: `store` is LangGraph's memory system, `repositories/` contains routing logic (not data access)
+5. **Error Retry Logic**: Errors increment `attempt` counter, but actual retry logic must be implemented in routing functions
+6. **Tool Usage**: Tools defined in `tools/` are passed to agents (see `finance_agent_node.py` using `create_agent(tools=[...])`)
 
-1. In `tools/{name}.py`: Use `@tool` decorator
-2. Tool wraps either:
-   - Node function: `result = node_function(state); return result["context"]`
-   - Repository function: `return fetch_from_db(user_id)`
-3. Add comprehensive docstring (agent uses this to decide when to call)
-4. Import in agent's `agent.py` and add to tools list
+## Common Tasks
 
-### Adding Semantic Search to Node
+**Add new intent type**: Update `IntentEnum` in `states.py` + add routing case in `route_after_intent_classification()`
 
-```python
-from langchain_openai import OpenAIEmbeddings
+**Modify prompt**: Edit `.txt` file in `prompts/` - changes apply immediately (no reload needed)
 
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-for topic in topics:
-    vector = embeddings.embed_query(topic)
-    results = qdrant_client.query_points(
-        collection_name=os.getenv("VECTOR_DB_COLLECTION_NAME"),
-        query=vector,
-        query_filter=user_filter,
-        limit=5
-    ).points
-```
+**Add new retrieval field**: Update `required_info` or `optional_info` lists in intent classifier prompt
 
-## Project-Specific Conventions
+**Change memory behavior**: Modify `save_response_memory_background()` in `chat_node.py` - controls what gets persisted
 
-- **Import paths**: Absolute from project root
-  - ✅ `from services.opanai_service import model`
-  - ❌ `from ..services.opanai_service import model`
-- **Naming**:
-  - Agent nodes: `{name}_node` (e.g., `finance_agent_node`)
-  - State keys for answers: `{agent}` or `{agent}_answer` (e.g., `finance_agent`, `web_answer`)
-  - Repository functions: `fetch_{data}_from_{source}`
-  - Async functions: All node functions must be `async def`
-- **State keys**: Each node writes to unique state key to avoid conflicts
-- **Conditional routing**: Always map all possible returns including `END`
-- **Qdrant API**: Use `query_points()`, not `search()` or `search_points()`
-- **Error handling**: Flexible parsing for OpenAI responses (handle dict/list formats)
-- **Prompt loading**: Use `load_prompt(name)` from `utils/prompt_loader.py` for external prompts
-- **Checkpointing**:
-  - MongoDB stores full state after each node execution
-  - Pass `None` to `app.ainvoke()` to resume from last checkpoint
-  - Use unique `thread_id` per user/session: `f"user-{user_id}-session-{session_id}"`
-  - On retry: Pass `{"error": None}` to clear error state while resuming from checkpoint
+**Debug graph execution**: Check console output - nodes print status with emoji prefixes (🧠, 📌, 🔧, etc.)
 
-## Common Patterns
-
-### Wrapping Node as Tool
-
-```python
-# tools/fetch_user_info.py
-from nodes.user_info_fetch import user_info_fetch as user_info_fetch_node
-
-@tool
-def fetch_user_info(user_id: str, query: str):
-    """Tool docstring for agent"""
-    state = {"user_id": user_id, "query": query, "context": {}}
-    result_state = user_info_fetch_node(state)
-    return result_state["context"]
-```
-
-### OpenAI Classification Pattern
-
-```python
-response = model.invoke([
-    {"role": "system", "content": SYSTEM_PROMPT},
-    {"role": "user", "content": query}
-])
-classification = json.loads(response.content)
-topics = classification.get("requires", ["default", "topics"])
-```
-
-### Deduplication After Multi-Topic Search
-
-```python
-unique_results = {}
-for result in all_results:
-    if result.id not in unique_results:
-        unique_results[result.id] = result
-return list(unique_results.values())
-```
-
-### Prompt Template Loading and Variable Injection
-
-```python
-# Load prompt from prompts/ directory
-base_prompt = load_prompt("finance_agent_prompt")
-
-# Replace placeholder {{variable_name}} with actual value
-prompt = base_prompt.replace("{{response_style}}", "\n".join(rules))
-```
+**Adjust model selection**: Import and use `small_model` or `large_model` from `services/opanai_service.py` based on task complexity

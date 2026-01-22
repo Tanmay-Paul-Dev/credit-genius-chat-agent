@@ -1,17 +1,17 @@
 from typing import Dict, Any, List
 from langchain_core.runnables import RunnableConfig
 from langgraph.store.base import BaseStore
-from states import State, IntentClassifierState
+from states import State, RequirementExtractorState
 from utils.prompt_loader import load_prompt
 from services.opanai_service import large_model
 
 # Initialize model with structured output
 intent_classifier_model = large_model.with_structured_output(
-    IntentClassifierState, method="function_calling"
+    RequirementExtractorState, method="function_calling"
 )
 
 
-async def intent_classifier_agent_node(
+async def requirement_extractor_node(
     state: State,
     config: RunnableConfig,
     store: BaseStore,
@@ -30,7 +30,7 @@ async def intent_classifier_agent_node(
     )
 
     # Load system prompt
-    system_prompt = load_prompt("intent_classifier_prompt")
+    system_prompt = load_prompt("requirements_exteactor_prompt")
 
     # Build full prompt with context
     full_prompt = f"""{system_prompt}
@@ -46,14 +46,22 @@ async def intent_classifier_agent_node(
     """
 
     # Call LLM with structured output
-    result: IntentClassifierState = await intent_classifier_model.ainvoke(full_prompt)
+    result: RequirementExtractorState = await intent_classifier_model.ainvoke(full_prompt)
 
     # Debug output
-    print("\n📌 Intent Classification Result")
-    print(f"Query Type     : {result.query_type}")
+    print("\n📌 Requirements Extraction Result")
+    print(f"Intent         : {result.intent}")
+    print(f"Required Info  : {result.required_info}")
+    print(f"Optional Info  : {result.optional_info}\n")
 
+    # Get existing intent from state and merge
+    existing_intent = state.get("intent", {})
+    
     return {
         "intent": {
-            "query_type": result.query_type,
+            **existing_intent,  # Preserves query_type from intent classifier
+            "intent": result.intent,
+            "required_info": result.required_info,
+            "optional_info": result.optional_info,
         },
     }
