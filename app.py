@@ -33,6 +33,7 @@ from repositories.conditional_repository import (
     route_after_memory_retrieval,
 )
 
+import time
 # ----------------------------------------
 # ENV & DB
 # ----------------------------------------
@@ -172,6 +173,7 @@ async def chat():
         while True:
             try:
                 user_input = input("You: ").strip()
+
                 if user_input.lower() in {"exit", "quit"}:
                     print("\n👋 Goodbye!")
                     break
@@ -206,7 +208,8 @@ async def chat():
                     print("\n❌ Error:")
                     print(json.dumps(result["error"], indent=2))
                 else:
-                    print("\nAgent 🤖:  ", result.get("final_answer", ""))
+                   
+                    print(f"\nAgent 🤖:  {result.get('final_answer', '')}")
                     print("-" * 50)
 
                 # Update messages for next iteration

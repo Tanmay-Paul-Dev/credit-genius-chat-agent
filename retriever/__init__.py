@@ -2,7 +2,7 @@
 # MMR Retriever for Pinecone vector store
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
-
+from datetime import datetime, timezone
 
 class MMRRetriever:
     def __init__(
@@ -27,29 +27,52 @@ class MMRRetriever:
 
     def retrieve(self, query: str, user_id: str | None = None) -> list[Document]:
         """
-        Retrieve documents with optional user_id filtering.
-
-        Args:
-            query: Search query string
-            user_id: Optional user_id to filter results (overrides instance user_id)
+        Retrieve documents with Recency Bias (Time Decay).
+        Relevant recent docs > Relevant old docs > Irrelevant docs.
         """
-        # Use provided user_id or fall back to instance user_id
         filter_user_id = user_id or self.user_id
-
-        # Build metadata filter for user_id (Pinecone format)
+        
         metadata_filter = None
         if filter_user_id:
             metadata_filter = {"userId": {"$eq": filter_user_id}}
 
-        # Create retriever with filter
-        retriever = self.vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={
-                "k": self.k,
-                "fetch_k": self.fetch_k,
-                "lambda_mult": self.lambda_mult,
-                "filter": metadata_filter,
-            },
+        # 1. Fetch more docs than needed (fetch_k) to allow re-ranking
+        # We use similarity_search_with_score because we need the base score to modify
+        docs_with_scores = self.vectorstore.similarity_search_with_score(
+            query=query,
+            k=self.k * 3, # Fetch 3x pool to find recent gems
+            filter=metadata_filter
         )
 
-        return retriever.invoke(query)
+        # 2. Apply Time Decay to Scores
+        scored_results = []
+        now = datetime.now(timezone.utc)
+        decay_rate = 0.01  # Adjustable: Higher = stricter penalty for old docs
+
+        for doc, score in docs_with_scores:
+            # Extract timestamp (Default to 'now' if missing so we don't punish docs with no date)
+            # Ensure your metadata date format matches! (Here assuming ISO format or unix timestamp)
+            ts_value = doc.metadata.get('timestamp')            
+            if ts_value:
+                # Parse timestamp depending on your format
+                # Example for ISO string: doc_date = datetime.fromisoformat(ts_value)
+                # Example for Unix float: 
+                doc_date = datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                
+                # Calculate age in days
+                days_old = (now - doc_date).days
+                days_old = max(0, days_old) # distinct possibility of negative if clocks skew
+            else:
+                days_old = 0
+
+            # Apply Formula: Score * (1 / (1 + rate * age))
+            time_factor = 1 / (1 + (decay_rate * days_old))
+            final_score = score * time_factor
+            
+            scored_results.append((doc, final_score))
+
+        # 3. Sort by New Adjusted Score (Highest first)
+        scored_results.sort(key=lambda x: x[1], reverse=True)
+
+        # 4. Return top K documents (strip scores to match return type)
+        return [doc for doc, score in scored_results[:self.k]]

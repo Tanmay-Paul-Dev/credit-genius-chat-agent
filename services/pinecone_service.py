@@ -23,6 +23,7 @@ embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
 # Create vectorstore with LangChain integration
 vectorstore = PineconeVectorStore(
+    distance_strategy="COSINE",
     index=pinecone_index,
     embedding=embeddings,
     namespace=NAMESPACE,

@@ -18,7 +18,8 @@ from langgraph.store.base import BaseStore
 from retriever import MMRRetriever
 from services.pinecone_service import vectorstore
 from services.opanai_service import large_model, small_model
-
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 async def save_retrieved_data_to_memory_background(
     user_id: str,
@@ -144,153 +145,117 @@ async def save_retrieved_data_to_memory_background(
         print(f"[Memory] Error: {e}")
 
 
-def build_composite_query(missing_fields: List[str]) -> str:
-    """Build a descriptive composite query for vector store retrieval."""
-    return ", ".join(missing_fields)
-
-
 async def retriever_node(
     state: State, config: RunnableConfig, store: BaseStore
 ) -> Dict[str, Any]:
-    """
-    Retrieves required_info and optional_info values.
-    Strategy: Extract all fields in one go from memory/messages first,
-    then batch retrieve remaining fields from vector store.
-    """
+
     user_id = config["configurable"]["user_id"]
 
-    # Get intent info
+    # 1. Get intent info
     intent_obj = state.get("intent", {})
-    intent = intent_obj.get("intent", {})
+    intent_description = intent_obj.get("intent", "")
     required_info_list = intent_obj.get("required_info", [])
     optional_info_list = intent_obj.get("optional_info", [])
     all_fields = required_info_list + optional_info_list
-
-    # Create retrieved_data structure with null values
-    retrieved_data = {
-        "required_info": {field: None for field in required_info_list},
-        "optional_info": {field: None for field in optional_info_list},
-    }
-
     recent_messages = state["messages"]
-    memory = state["memory_context"]
+    ns = ("user", user_id, "details")
+    items = list(store.search(ns))
+    memory = (
+        "\n".join(f"- {it.value.get('data', '')}" for it in items)
+        if items
+        else "(empty)"
+    )
 
-    # Initialize retriever (only used if memory/messages don't have the info)
+    # 2. Initialize retriever
     retriever = MMRRetriever(
         vectorstore=vectorstore, k=5, fetch_k=20, lambda_mult=0.6, user_id=user_id
     )
 
-    # Step 1 & Step 3: Run in PARALLEL
-    # - Step 1: Extract fields from memory/messages
-    # - Step 3: Retrieve intent info from vector store
-    print(f"\n[Retriever] 🔍 Extracting all fields from memory/messages: {all_fields}")
-    print(f"[Retriever] ⚡ Running Steps 1 & 3 in parallel...")
-
-
-
-    # Define async wrapper for sync retriever call (Step 3)
-    async def retrieve_intent_async():
-        return retriever.retrieve(intent, user_id=user_id)
-
-    # Run Step 1 and Step 3 in parallel
-    memory_extracted, intent_docs = await asyncio.gather(
-        _extract_all_fields_from_memory(all_fields, recent_messages, memory),
-        retrieve_intent_async(),
+    # 3. Retrieve Documents
+    retrieved_docs = retriever.retrieve(intent_description, user_id=user_id)
+    retrieved_context = "\n".join(
+        f"- {doc.page_content}" for doc in retrieved_docs
     )
 
-    # Process intent data from Step 3
-    intent_data = intent_docs[0].page_content if intent_docs else ""
+    # 4. Extract Fields (LLM Call)
+    extracted_values = await _extract_all_fields_from_context(
+        all_fields, retrieved_context, "\n".join(memory), str(recent_messages)
+    )
 
-    # Update retrieved_data with memory-extracted values from Step 1
-    missing_fields = []
-    for field in required_info_list:
-        if memory_extracted.get(field) is not None:
-            retrieved_data["required_info"][field] = memory_extracted[field]
-            print(
-                f"[Retriever] ✅ Found {field} in memory/messages: {memory_extracted[field]}"
-            )
-        else:
-            missing_fields.append(field)
-
-    for field in optional_info_list:
-        if memory_extracted.get(field) is not None:
-            retrieved_data["optional_info"][field] = memory_extracted[field]
-            print(
-                f"[Retriever] ✅ Found {field} in memory/messages: {memory_extracted[field]}"
-            )
-        else:
-            missing_fields.append(field)
-
-    # Step 2: For missing fields ONLY, batch retrieve from vector store using composite query
-    if missing_fields:
-        print(
-            f"\n[Retriever] 🔄 Missing fields, retrieving from vector store: {missing_fields}"
-        )
-
-        # Create composite query from all missing fields
-        composite_query = build_composite_query(missing_fields)
-
-        print(f"[Retriever] 🔍 Composite query: {composite_query}")
-        all_docs = retriever.retrieve(composite_query, user_id=user_id)
-
-        if all_docs:
-            # Build context from retrieved documents (deduplicate by content)
-            seen_content = set()
-            unique_docs = []
-            for doc in all_docs:
-                if doc.page_content not in seen_content:
-                    seen_content.add(doc.page_content)
-                    unique_docs.append(doc)
-
-            context = "\n\n".join(
-                f"[DOCUMENT {i + 1}]\n{doc.page_content}"
-                for i, doc in enumerate(unique_docs[:10])  # Limit to 10 docs
-            )
-
-            # Extract all missing fields from vector store docs in one go
-            vector_extracted = await _extract_all_fields_from_context(
-                missing_fields, context
-            )
-
-            # Update retrieved_data with vector-extracted values
-            for field in missing_fields:
-                if vector_extracted.get(field) is not None:
-                    if field in required_info_list:
-                        retrieved_data["required_info"][field] = vector_extracted[field]
-                    else:
-                        retrieved_data["optional_info"][field] = vector_extracted[field]
-                    print(
-                        f"[Retriever] ✅ Found {field} in vector store: {vector_extracted[field]}"
-                    )
-                else:
-                    print(f"[Retriever] ❌ Could not extract {field}")
-
-            # 🔥 Save vector store extracted data to memory in background
-            asyncio.create_task(
-                save_retrieved_data_to_memory_background(
-                    user_id=user_id,
-                    store=store,
-                    retrieved_data={
-                        "required_info": {k: v for k, v in vector_extracted.items() if k in required_info_list},
-                        "optional_info": {k: v for k, v in vector_extracted.items() if k in optional_info_list},
-                    },
-                )
-            )
-        else:
-            print(f"[Retriever] ❌ No documents found for missing fields")
-
-    # Add intent data to retrieved_data
-    retrieved_data = {**retrieved_data, "retrived_intent_info": intent_data}
-
-    return {
-        **state,
-        "retrieved_data": retrieved_data,
+    # 5. Map flat response back to structured dictionaries
+    structured_data = {
+        "required_info": {},
+        "optional_info": {}
     }
 
+    # Populate Required
+    for field in required_info_list:
+        structured_data["required_info"][field] = extracted_values.get(field)
+
+    # Populate Optional
+    for field in optional_info_list:
+        structured_data["optional_info"][field] = extracted_values.get(field)
+
+    print(f"[Retriever] 🧩 Extracted data: {structured_data}")
+
+    # Check for missing required_info and optional_info
+    missing_required = [field for field in required_info_list if structured_data["required_info"][field] is None]
+    missing_optional = [field for field in optional_info_list if structured_data["optional_info"][field] is None]
+
+
+    # If any fields are missing, perform composite retrieval
+    if missing_required or missing_optional:
+        print(f"[Retriever] 🔄 Missing fields detected - Required: {missing_required}, Optional: {missing_optional}")
+        
+        # Build composite query from missing required_info and optional_info keys (comma separated)
+        composite_query_fields = missing_required + missing_optional  # Use both required and optional fields
+    
+        composite_query = ", ".join(composite_query_fields)
+        print(f"[Retriever] 🔍 Composite query: {composite_query}")
+        
+        # Retrieve documents with composite query
+        step2_retrieved_docs = retriever.retrieve(composite_query, user_id=user_id)
+        step2_retrieved_docs = "\n".join(
+        f"- {doc.page_content}" for doc in step2_retrieved_docs
+    )
+        
+        print(f"[Retriever] 🧠 Extracting missing fields from composite context")
+        composite_extracted = await _extract_all_fields_from_context(
+            composite_query_fields, step2_retrieved_docs, memory, str(recent_messages)
+        )
+        
+
+        print(f"[Retriever] 🧩 Composite extracted values: {composite_extracted}")
+        # Update structured_data with newly found values
+        for field in missing_required:
+            if composite_extracted.get(field) is not None:
+                structured_data["required_info"][field] = composite_extracted[field]
+                print(f"[Retriever] ✅ Found missing required field {field}: {composite_extracted[field]}")
+        
+        for field in missing_optional:
+            if composite_extracted.get(field) is not None:
+                structured_data["optional_info"][field] = composite_extracted[field]
+                print(f"[Retriever] ✅ Found missing optional field {field}: {composite_extracted[field]}")
+
+    # Save retrieved data to memory in background
+    # asyncio.create_task(
+    #     save_retrieved_data_to_memory_background(
+    #         user_id=user_id,
+    #         store=store,
+    #         retrieved_data=structured_data,
+    #     )
+    # )
+
+    # 6. Return State
+    return {
+        **state,
+        "retrieved_data": structured_data,
+    }
 
 async def _extract_all_fields_from_memory(
     fields: List[str], recent_messages: List[Dict[str, Any]], memory: List[str]
 ) -> Dict[str, Any]:
+    start_time = time.time()
     """
     Use LLM to extract ALL field values from memory and recent messages in one go.
     Returns a dict with field names as keys and extracted values (or None if not found).
@@ -342,6 +307,8 @@ async def _extract_all_fields_from_memory(
             value = getattr(result, field, None)
             if value is not None and value != "" and value != "null":
                 extracted[field] = value
+        end_time = time.time()
+        print(f"[EXTRACT FROM MEMORY TIME] ⚡ Extract all fields from memory took {end_time - start_time} seconds")
         return extracted
     except Exception as e:
         print(f"[Retriever] LLM memory extraction error: {e}")
@@ -349,7 +316,7 @@ async def _extract_all_fields_from_memory(
 
 
 async def _extract_all_fields_from_context(
-    fields: List[str], context: str
+    fields: List[str], retriver_data: str, memory: str, recent_messages: str
 ) -> Dict[str, Any]:
     """
     Use LLM to extract ALL field values from vector store context in one go.
@@ -382,8 +349,14 @@ async def _extract_all_fields_from_context(
     - Extract only the most relevant/recent value for each field.
     - Return null for any field not found.
 
-    User Data:
-    {context}
+    Retriever Data:
+    {retriver_data}
+
+    Memory:
+    {memory}
+
+    Recent Messages:
+    {recent_messages}
 
     Extract values for: {fields_list}"""
 
@@ -400,3 +373,6 @@ async def _extract_all_fields_from_context(
     except Exception as e:
         print(f"[Retriever] LLM extraction error: {e}")
         return {}
+
+
+

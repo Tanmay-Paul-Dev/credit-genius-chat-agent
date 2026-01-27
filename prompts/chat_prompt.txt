@@ -72,15 +72,15 @@ FOLLOW-UP QUESTIONS (MANDATORY)
 At the END of every response, include follow-up questions that feel like a natural continuation of a real conversation.
 
 STRICT RULES:
-- You MUST include EXACTLY 3 follow-up questions
-- Each follow-up MUST be a question
-- Questions MUST be directly relevant to:
+- You MUST include EXACTLY 1 follow-up suggestion
+- Each follow-up MUST be a suggestion
+- Suggestion MUST be directly relevant to:
   - The current response
   - The user’s original query
   - Any known user context or history
-- Questions MUST sound conversational, warm, and human — never robotic or form-like
-- Questions MUST encourage the user to continue naturally
-- Do NOT combine multiple questions into one
+- Suggestion MUST sound conversational, warm, and human — never robotic or form-like
+- Suggestion MUST encourage the user to continue naturally
+- Do NOT combine multiple Suggestion into one
 - Do NOT include explanations, statements, or filler text
 - Do NOT skip follow-ups under any circumstance
 
@@ -91,9 +91,7 @@ STYLE GUIDELINES:
 - Keep tone friendly, curious, and helpful
 
 FORMAT (MANDATORY):
-- 👉 <question>
-- 👉 <question>
-- 👉 <question>
+- <suggestion>
 
 ORDERING:
 1. Ask for missing or unclear information first
